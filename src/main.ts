@@ -1,6 +1,9 @@
 import { writeFileSync, existsSync, mkdirSync } from 'fs';
 import axios from 'axios';
 import { join, dirname } from 'path';
+import * as cheerio from 'cheerio';
+import prettier from 'prettier';
+import { optimize } from 'svgo'; // Import SVGO for SVG optimization
 
 // Utility function to convert file name to PascalCase with 'Icon' suffix
 function toPascalCase(str: string): string {
@@ -44,15 +47,32 @@ async function convertSvgToReact(urls: string[]): Promise<void> {
       const response = await axios.get<string>(url);
       const svgData = response.data;
 
-      // Extract the path data from the SVG
-      const pathMatch = svgData.match(/<path\s[^>]*d="([^"]*)"/);
+      // Optimize and transform SVG to JSX-compatible attributes using SVGO
+      const optimizedSvg = optimize(svgData, {
+        plugins: [
+          {
+            name: 'preset-default',
+            params: {
+              overrides: {
+                removeViewBox: false, // Keep viewBox attribute
+                cleanupIds: false,
+              },
+            },
+          },
+          {
+            name: 'convertStyleToAttrs', // Convert inline styles to attributes
+          },
+          {
+            name: 'convertColors', // Convert colors to hex or rgb
+          },
+          {
+            name: 'convertTransform', // Convert transforms to matrix or attribute
+          },
+        ],
+      });
 
-      if (!pathMatch) {
-        console.error(`No path found in the SVG file: ${fileName}`);
-        continue;
-      }
-
-      const pathData = pathMatch[1];
+      const $ = cheerio.load(optimizedSvg.data, { xmlMode: true });
+      const svgElements = $('svg').html(); // Extract all content within the <svg> tag
 
       // Generate the React component code
       const reactComponent = `
@@ -62,37 +82,30 @@ export default function ${iconName}(props: IconProps) {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
-      fill="none"
+      fill="currentColor"
       viewBox="0 0 24 24"
-      strokeWidth={1.5}
-      stroke="currentColor"
-      className="arctic-icon-medium"
+      className="arctic-icon-medium solid"
       aria-label="${ariaLabel}"
       {...props}
     >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="${pathData}"
-      />
+      ${svgElements}
     </svg>
   );
 }`;
 
+      // Use prettier to format the generated code
+      const formattedCode = prettier.format(reactComponent, {
+        parser: 'babel-ts',
+      });
+
       // Determine the output directory
-      const outputPath = join(
-        process.cwd(),
-        'src',
-        'assets',
-        'icons',
-        `${iconName}.tsx`
-      );
+      const outputPath = join(process.cwd(), 'src', 'icons', `${iconName}.tsx`);
 
       // Ensure directory exists
       ensureDirectoryExistence(outputPath);
 
-      // Save the file
-      writeFileSync(outputPath, reactComponent.trim());
+      // Save the formatted file
+      writeFileSync(outputPath, formattedCode);
       console.log(`React component saved as ${iconName}.tsx`);
     } catch (error) {
       console.error(`Error fetching or processing the SVG for ${url}:`, error);
@@ -134,7 +147,7 @@ async function fetchGithubSvgUrls(
 // Example usage:
 async function processGithubSvgs() {
   const repo = 'tailwindlabs/heroicons'; // GitHub repo in format 'owner/repo'
-  const path = 'src/24/outline'; // Path within the repo
+  const path = 'src/24/solid'; // Path within the repo
 
   // Fetch SVG file URLs using the GitHub API
   const svgUrls = await fetchGithubSvgUrls(repo, path);
